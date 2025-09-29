@@ -9,7 +9,11 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+# for import module in cs336_basics
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from cs336_basics.transformer import Linear
 def run_linear(
     d_in: int,
     d_out: int,
@@ -28,10 +32,11 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    net = Linear(d_in, d_out)
+    net.load_state_dict({"W": weights})
+    return net(in_features)
 
-    raise NotImplementedError
-
-
+from cs336_basics.transformer import Embedding
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -51,9 +56,11 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    net = Embedding(vocab_size, d_model)
+    net.load_state_dict({"W": weights})
+    return net(token_ids)
 
-
+from cs336_basics.transformer import SwiGLU
 def run_swiglu(
     d_model: int,
     d_ff: int,
@@ -83,9 +90,11 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    net = SwiGLU(d_model, d_ff)
+    net.load_state_dict({"W1.W": w1_weight, "W2.W": w2_weight, "W3.W": w3_weight})
+    return net(in_features)
 
-
+from cs336_basics.transformer import scaled_dot_product_attention
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -104,9 +113,9 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q,K,V,mask)
 
-
+from cs336_basics.transformer import MultiheadSelfAttention
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
@@ -138,7 +147,9 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    net = MultiheadSelfAttention(d_model, num_heads)
+    net.load_state_dict({"W_Q": q_proj_weight, "W_K": k_proj_weight, "W_V": v_proj_weight, "W_O": o_proj_weight})
+    return net(in_features, in_features, in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -178,9 +189,12 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    rope_layer = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len)
+    net = MultiheadSelfAttention(d_model, num_heads, rope_layer)
+    net.load_state_dict({"W_Q": q_proj_weight, "W_K": k_proj_weight, "W_V": v_proj_weight, "W_O": o_proj_weight}, strict=False)
+    return net(in_features, in_features, in_features, token_positions)
 
-
+from cs336_basics.transformer import RotaryPositionalEmbedding
 def run_rope(
     d_k: int,
     theta: float,
@@ -200,7 +214,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    net = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    return net(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -357,7 +372,7 @@ def run_transformer_lm(
     """
     raise NotImplementedError
 
-
+from cs336_basics.transformer import RMSNorm
 def run_rmsnorm(
     d_model: int,
     eps: float,
@@ -378,7 +393,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    net = RMSNorm(d_model, eps)
+    net.load_state_dict({"w": weights})
+    return net(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -417,7 +434,7 @@ def run_get_batch(
     """
     raise NotImplementedError
 
-
+from cs336_basics.transformer import softmax
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
     """
     Given a tensor of inputs, return the output of softmaxing the given `dim`
@@ -431,7 +448,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -538,7 +555,7 @@ def run_load_checkpoint(
     """
     raise NotImplementedError
 
-
+from cs336_basics.pretokenization_example import tokenizer
 def get_tokenizer(
     vocab: dict[int, bytes],
     merges: list[tuple[bytes, bytes]],
@@ -559,9 +576,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return tokenizer(vocab, merges, special_tokens)
 
-
+from cs336_basics.pretokenization_example import train_bpe_with_parallism
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -589,4 +606,4 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    return train_bpe_with_parallism(input_path, vocab_size, special_tokens)
