@@ -148,7 +148,7 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     net = MultiheadSelfAttention(d_model, num_heads)
-    net.load_state_dict({"W_Q": q_proj_weight, "W_K": k_proj_weight, "W_V": v_proj_weight, "W_O": o_proj_weight})
+    net.load_state_dict({"W_Q.W": q_proj_weight, "W_K.W": k_proj_weight, "W_V.W": v_proj_weight, "W_O.W": o_proj_weight})
     return net(in_features, in_features, in_features)
 
 
@@ -191,7 +191,7 @@ def run_multihead_self_attention_with_rope(
     """
     rope_layer = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len)
     net = MultiheadSelfAttention(d_model, num_heads, rope_layer)
-    net.load_state_dict({"W_Q": q_proj_weight, "W_K": k_proj_weight, "W_V": v_proj_weight, "W_O": o_proj_weight}, strict=False)
+    net.load_state_dict({"W_Q.W": q_proj_weight, "W_K.W": k_proj_weight, "W_V.W": v_proj_weight, "W_O.W": o_proj_weight}, strict=False)
     return net(in_features, in_features, in_features, token_positions)
 
 from cs336_basics.transformer import RotaryPositionalEmbedding
@@ -217,7 +217,7 @@ def run_rope(
     net = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
     return net(in_query_or_key, token_positions)
 
-
+from cs336_basics.transformer import transformer_block
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -288,9 +288,22 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    net = transformer_block(d_model, num_heads, d_ff, max_seq_len, theta)
+    #net.load_state_dict({"W_Q.W": q_proj_weight, "W_K.W": k_proj_weight, "W_V.W": v_proj_weight, "W_O.W": o_proj_weight}, strict=False)
+    net.load_state_dict({
+        "attention.W_Q.W": weights['attn.q_proj.weight'],
+        "attention.W_K.W": weights['attn.k_proj.weight'],
+        "attention.W_V.W": weights['attn.v_proj.weight'],
+        "attention.W_O.W": weights['attn.output_proj.weight'],
+        "norm1.w": weights['ln1.weight'],
+        "ffn.W1.W": weights['ffn.w1.weight'],
+        "ffn.W2.W": weights['ffn.w2.weight'],
+        "ffn.W3.W": weights['ffn.w3.weight'],
+        "norm2.w": weights['ln2.weight'],
+    }, strict=False)
+    return net(in_features)
 
-
+from cs336_basics.transformer import transformer_lm
 def run_transformer_lm(
     vocab_size: int,
     context_length: int,
@@ -370,7 +383,19 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    net = transformer_lm(vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta)
+    state_dict = {
+        "embedding.W": weights['token_embeddings.weight'],
+        "norm.w": weights['ln_final.weight'],
+        "out_linear.W": weights['lm_head.weight']
+    }
+    block_weight_keys = ["attention.W_Q.W", "attention.W_K.W", "attention.W_V.W", "attention.W_O.W", "norm1.w", "ffn.W1.W", "ffn.W2.W", "ffn.W3.W", "norm2.w"]
+    pre_trained_keys =  ['attn.q_proj.weight', 'attn.k_proj.weight', 'attn.v_proj.weight', 'attn.output_proj.weight', 'ln1.weight', 'ffn.w1.weight', 'ffn.w2.weight', 'ffn.w3.weight', 'ln2.weight']
+    for i in range(num_layers):
+        for dst_key, src_key in zip(block_weight_keys, pre_trained_keys):
+            state_dict['blocks.' + str(i) + '.' + dst_key] = weights['layers.' + str(i) + '.' + src_key]
+    net.load_state_dict(state_dict, strict=False)
+    return net(in_indices)
 
 from cs336_basics.transformer import RMSNorm
 def run_rmsnorm(

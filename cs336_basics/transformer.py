@@ -81,9 +81,9 @@ class SwiGLU(nn.Module):
         # self.W1 = nn.Parameter(torch.ones((self.d_ff, self.d_model), device=device, dtype=dtype))
         # self.W2 = nn.Parameter(torch.ones((self.d_model, self.d_ff), device=device, dtype=dtype))
         # self.W3 = nn.Parameter(torch.ones((self.d_ff, self.d_model), device=device, dtype=dtype))
-        self.W1 = Linear(self.d_model, self.d_ff)
-        self.W2 = Linear(self.d_ff, self.d_model)
-        self.W3 = Linear(self.d_model, self.d_ff)
+        self.W1 = Linear(self.d_model, self.d_ff, device, dtype)
+        self.W2 = Linear(self.d_ff, self.d_model, device, dtype)
+        self.W3 = Linear(self.d_model, self.d_ff, device, dtype)
     
     def forward(self, X):
         def SiLU(X):
@@ -189,16 +189,21 @@ class MultiheadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.rope = rope
         # d_in = d_model
-        self.W_Q = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype))
-        self.W_K = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype))
-        self.W_V = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype)) # d_k = d_v
-        self.W_O = nn.Parameter(torch.empty((d_model, d_model), device=device, dtype=dtype)) # d_out * d_v, d_out = d_model
-        torch.nn.init.xavier_uniform_(self.W_Q)
-        torch.nn.init.xavier_uniform_(self.W_K)
-        torch.nn.init.xavier_uniform_(self.W_V)
-        torch.nn.init.xavier_uniform_(self.W_O)
+        # self.W_Q = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype))
+        # self.W_K = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype))
+        # self.W_V = nn.Parameter(torch.empty((self.d_model, d_model), device=device, dtype=dtype)) # d_k = d_v
+        # self.W_O = nn.Parameter(torch.empty((d_model, d_model), device=device, dtype=dtype)) # d_out * d_v, d_out = d_model
+        # torch.nn.init.xavier_uniform_(self.W_Q)
+        # torch.nn.init.xavier_uniform_(self.W_K)
+        # torch.nn.init.xavier_uniform_(self.W_V)
+        # torch.nn.init.xavier_uniform_(self.W_O)
+        # update use Linear instead of nn.Parameter
+        self.W_Q = Linear(self.d_model, self.d_model, device, dtype)
+        self.W_K = Linear(self.d_model, self.d_model, device, dtype)
+        self.W_V = Linear(self.d_model, self.d_model, device, dtype)
+        self.W_O = Linear(self.d_model, self.d_model, device, dtype)
 
-    def forward(self, Q:torch.Tensor, K:torch.Tensor, V:torch.Tensor, token_positions:torch.Tensor = None):
+    def forward(self, X:torch.Tensor, token_positions:torch.Tensor = None):
         def transpose(X: torch.Tensor):
             # transform X from [..., n, d_model] -> [..., n, num_heads, d_k] ->[..., num_heads, n, d_k]
             return X.reshape(*X.shape[:-1], self.num_heads, self.d_k).transpose(-2, -3)
@@ -213,20 +218,66 @@ class MultiheadSelfAttention(nn.Module):
             if self.rope is not None:
                 X = self.rope(X, token_positions)
             return X
-
-        W_Q, W_K, W_V = self.W_Q.T, self.W_K.T, self.W_V.T
-        Q = transpose_and_rope(Q @ W_Q, token_positions)
-        K = transpose_and_rope(K @ W_K, token_positions)
-        V = transpose(V @ W_V)#[..., num_heads, n, d_k]
+        Q=K=V=X
+        Q = transpose_and_rope(self.W_Q(Q), token_positions)
+        K = transpose_and_rope(self.W_K(K), token_positions)
+        V = transpose(self.W_V(V))#[..., num_heads, n, d_k]
         num_steps = Q.shape[-2]
         device = Q.device
         mask = torch.tril(torch.ones((num_steps, num_steps), dtype=torch.bool, device=device))
         multi_head_attention = scaled_dot_product_attention(Q, K, V, mask) #[..., num_heads, n, d_v]
         multi_head_attention = transpose_back(multi_head_attention)
-        return multi_head_attention @ self.W_O.T # n * d_out
-'''
-ndk * dmoel
-'''
+        return self.W_O(multi_head_attention) # n * d_out
+
+class transformer_block(nn.Module):
+    rope = None
+    def __init__(self, d_model, num_heads, d_ff, max_seq_len, theta, device = None):
+        super(transformer_block, self).__init__()
+        self.norm1 = RMSNorm(d_model, device=device)
+        if transformer_block.rope is None:
+            transformer_block.rope = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len, device=device)
+        # pos encoding layer. maybe global variable?
+        self.attention = MultiheadSelfAttention(d_model, num_heads, transformer_block.rope, device=device)
+        self.norm2 = RMSNorm(d_model, device=device)
+        self.ffn = SwiGLU(d_model, d_ff, device=device)
+    
+    def forward(self, X: torch.Tensor):
+        seq_len = X.shape[-2]
+        token_positions = torch.arange(seq_len)
+        Y = X + self.attention(self.norm1(X), token_positions)
+        Z = Y + self.ffn(self.norm2(Y))
+        return Z
+
+class transformer_lm(nn.Module):
+    def __init__(self, vocab_size, context_length, num_layers, d_model, num_heads, d_ff, theta, device = None):
+        super(transformer_lm, self).__init__()
+        # parameters
+        self.vocab_size = vocab_size
+        self.max_seq_len = context_length
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.theta = theta
+        self.device = device
+        # components
+        self.embedding = Embedding(self.vocab_size, self.d_model, device=self.device) # embdding will map input token id to vector with length d_model
+        blocks = []    # add num_layers transformer blocks
+        for i in range(self.num_layers):
+            blocks.append(transformer_block(self.d_model, self.num_heads, self.d_ff, self.max_seq_len, self.theta, device=self.device))
+        self.blocks = nn.ModuleList(blocks)
+        self.norm = RMSNorm(d_model, device=self.device)
+        self.out_linear = Linear(d_model, vocab_size, device=self.device)
+    
+    def forward(self, X:torch.Tensor):
+        X = self.embedding(X)
+        for i in range(self.num_layers):
+            X = self.blocks[i](X)
+        X = self.norm(X)
+        Y = self.out_linear(X)
+        # as illustrated in figure1 in section 3, the returned value should be softmax, but the test will match logits......
+        #return softmax(Y, -1)
+        return Y
 
 # linear = Linear(2, 3)
 # X = torch.rand((5,2,2))
