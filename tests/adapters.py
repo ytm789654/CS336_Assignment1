@@ -13,7 +13,7 @@ from torch import Tensor
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from cs336_basics.transformer import Linear
+from cs336_basics.transformer_architecture import Linear
 def run_linear(
     d_in: int,
     d_out: int,
@@ -36,7 +36,7 @@ def run_linear(
     net.load_state_dict({"W": weights})
     return net(in_features)
 
-from cs336_basics.transformer import Embedding
+from cs336_basics.transformer_architecture import Embedding
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -60,7 +60,7 @@ def run_embedding(
     net.load_state_dict({"W": weights})
     return net(token_ids)
 
-from cs336_basics.transformer import SwiGLU
+from cs336_basics.transformer_architecture import SwiGLU
 def run_swiglu(
     d_model: int,
     d_ff: int,
@@ -94,7 +94,7 @@ def run_swiglu(
     net.load_state_dict({"W1.W": w1_weight, "W2.W": w2_weight, "W3.W": w3_weight})
     return net(in_features)
 
-from cs336_basics.transformer import scaled_dot_product_attention
+from cs336_basics.transformer_architecture import scaled_dot_product_attention
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -115,7 +115,7 @@ def run_scaled_dot_product_attention(
     """
     return scaled_dot_product_attention(Q,K,V,mask)
 
-from cs336_basics.transformer import MultiheadSelfAttention
+from cs336_basics.transformer_architecture import MultiheadSelfAttention
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
@@ -194,7 +194,7 @@ def run_multihead_self_attention_with_rope(
     net.load_state_dict({"W_Q.W": q_proj_weight, "W_K.W": k_proj_weight, "W_V.W": v_proj_weight, "W_O.W": o_proj_weight}, strict=False)
     return net(in_features, in_features, in_features, token_positions)
 
-from cs336_basics.transformer import RotaryPositionalEmbedding
+from cs336_basics.transformer_architecture import RotaryPositionalEmbedding
 def run_rope(
     d_k: int,
     theta: float,
@@ -217,7 +217,7 @@ def run_rope(
     net = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
     return net(in_query_or_key, token_positions)
 
-from cs336_basics.transformer import transformer_block
+from cs336_basics.transformer_architecture import transformer_block
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -303,7 +303,7 @@ def run_transformer_block(
     }, strict=False)
     return net(in_features)
 
-from cs336_basics.transformer import transformer_lm
+from cs336_basics.transformer_architecture import transformer_lm
 def run_transformer_lm(
     vocab_size: int,
     context_length: int,
@@ -397,7 +397,7 @@ def run_transformer_lm(
     net.load_state_dict(state_dict, strict=False)
     return net(in_indices)
 
-from cs336_basics.transformer import RMSNorm
+from cs336_basics.transformer_architecture import RMSNorm
 def run_rmsnorm(
     d_model: int,
     eps: float,
@@ -436,7 +436,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """
     raise NotImplementedError
 
-
+from cs336_basics.transformer_training import data_loading
 def run_get_batch(
     dataset: npt.NDArray, batch_size: int, context_length: int, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -457,9 +457,9 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return data_loading(dataset, batch_size, context_length, device)
 
-from cs336_basics.transformer import softmax
+from cs336_basics.transformer_architecture import softmax
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
     """
     Given a tensor of inputs, return the output of softmaxing the given `dim`
@@ -475,12 +475,12 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     """
     return softmax(in_features, dim)
 
-
+from cs336_basics.transformer_training import cross_entropy
 def run_cross_entropy(
     inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
 ) -> Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
-    loss across examples.
+    loss across examples. 
 
     Args:
         inputs (Float[Tensor, "batch_size vocab_size"]): inputs[i][j] is the
@@ -491,9 +491,9 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return cross_entropy(inputs, targets)
 
-
+from cs336_basics.transformer_training import gradient_clipping
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
@@ -503,16 +503,16 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    gradient_clipping(parameters, max_l2_norm)
 
-
+from cs336_basics.transformer_training import AdamW
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return AdamW
 
-
+from cs336_basics.transformer_training import learning_rate_schedule
 def run_get_lr_cosine_schedule(
     it: int,
     max_learning_rate: float,
@@ -538,9 +538,9 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return learning_rate_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
-
+from cs336_basics.transformer_training import save_checkpoint
 def run_save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -557,9 +557,9 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, optimizer, iteration, out)
 
-
+from cs336_basics.transformer_training import load_checkpoint
 def run_load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
     model: torch.nn.Module,
@@ -578,7 +578,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 from cs336_basics.pretokenization_example import tokenizer
 def get_tokenizer(

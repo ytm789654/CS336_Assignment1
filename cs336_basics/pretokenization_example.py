@@ -1,9 +1,11 @@
 import os
 from typing import BinaryIO, Dict, Tuple
+from collections.abc import Iterable
 import regex as re
 from concurrent.futures import ProcessPoolExecutor
 import time
 import pickle
+import numpy as np
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -30,7 +32,7 @@ def find_chunk_boundaries(
 
     mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
 
-    for bi in range(1, len(chunk_boundaries) - 1):  # bi [1, desired_num_chunks - 1]
+    for bi in range(1, len(chunk_boundaries) - 1):  # bi in [1, desired_num_chunks - 1]
         initial_position = chunk_boundaries[bi]
         file.seek(initial_position)  # Start at boundary guess
         while True:
@@ -248,7 +250,7 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
         return m.vocab, m.merges
 
 # parallel read file to generate word_freq dict
-def parallism_launch_function(filepath: str, chunk_boundaries: list[tuple], special_tokens: list[str]):
+def parallism_train_launch_function(filepath: str, chunk_boundaries: list[tuple], special_tokens: list[str]):
     word_freq: Dict[Tuple[str], int] = {}
     with open(filepath, "rb") as f:
         for start, end in chunk_boundaries:
@@ -283,12 +285,12 @@ def train_bpe_with_parallism(input_path: str, vocab_size: int, special_tokens: l
         chunk_num = len(boundaries) -1
         boundaries = [(start, end) for start, end in zip(boundaries[:-1], boundaries[1:])]
 
-        # since chunk num maybe lower than expect, we should recalc exact processes, but this should be the same if dataset is bigggggg.
+        # since chunk num maybe lower than expect, we should re-calc exact processes, but this should be the same if dataset is bigggggg.
         boundaries_per_process = [boundaries[i:i+chunk_per_process] for i in range(0, chunk_num, chunk_per_process)]
         num_processes = len(boundaries_per_process)
         with ProcessPoolExecutor(max_workers=num_processes) as executor:
             futures = [
-                executor.submit(parallism_launch_function, input_path, boundaries_per_process[i], special_tokens) for i in range(num_processes)
+                executor.submit(parallism_train_launch_function, input_path, boundaries_per_process[i], special_tokens) for i in range(num_processes)
             ]
             for future in futures:
                 executor_res = future.result()
@@ -318,7 +320,7 @@ def train_bpe_with_parallism(input_path: str, vocab_size: int, special_tokens: l
     return m.vocab, m.merges
 
 class tokenizer():
-    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: str = None):
+    def __init__(self, vocab: dict[int, bytes] = {}, merges: list[tuple[bytes, bytes]] = [], special_tokens: str = None):
         self.special_tokens = None
         self.token_to_idx: Dict[bytes, int] = {}
         self.special_token_to_idx: Dict[str, int] = {} # the given special_token is str
@@ -367,9 +369,10 @@ class tokenizer():
                 id = self.token_to_idx[docs[i].encode('utf-8')]
                 encoded = encoded +[id]
         return encoded
-    def encode_iterable(self, iter):
+
+    def encode_iterable(self, iter: Iterable[str])-> Iterable[int]:
         while True:
-            chunk = ''.join(iter.readline() for _ in range(100))
+            chunk = ''.join(iter.readline() for _ in range(10000))
             if not chunk:
                 break
             tokens = self.encode(chunk)
@@ -386,17 +389,51 @@ class tokenizer():
                 decoded = decoded + b'\xff\xfd'
         return decoded.decode('utf-8', 'replace')
 
+
+# parallel read file to generate token seq
+def parallism_encode_launch_function(filepath: str, chunk_boundaries: list[tuple], tokenizer:tokenizer, thread_idx: int):
+    with open(filepath, "rb") as f:
+        for start, end in chunk_boundaries:
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            encoded = tokenizer.encode(chunk)
+            with open("../data/training_seq_data/TinyStoriesV2-GPT4-train_bpe" + str(thread_idx) + ".npy", "ab") as np_out:
+                np_out.write(np.array(encoded, dtype=np.int16).tobytes())
+                np_out.close()
+        f.close()
+
+def encode_file(filepath, tokenizer:tokenizer):
+    with open(filepath, "rb") as f:
+        # My 136kf has 20 logic processor, so can try 20 processes, awsome!
+        num_processes = 20
+        chunk_per_process = 4
+        boundaries = find_chunk_boundaries(f, num_processes * chunk_per_process, b"<|endoftext|>")
+        f.close()
+        chunk_num = len(boundaries) -1
+        boundaries = [(start, end) for start, end in zip(boundaries[:-1], boundaries[1:])]
+
+        # since chunk num maybe lower than expect, we should re-calc exact processes, but this should be the same if dataset is bigggggg.
+        boundaries_per_process = [boundaries[i:i+chunk_per_process] for i in range(0, chunk_num, chunk_per_process)]
+        num_processes = len(boundaries_per_process)
+        with ProcessPoolExecutor(max_workers=num_processes) as executor:
+            for i in range(num_processes):
+                executor.submit(parallism_encode_launch_function, filepath, boundaries_per_process[i], tokenizer, i)
+        
 if __name__ == '__main__':
     start_time = time.time()
-    train_data_set_path = '../data/TinyStoriesV2-GPT4-valid.txt'
-    target_vocab_size = 1000
-    vocab_special_tokens = ["<|endoftext|>"]
+    '''
+    load exsiting BPE tokenizer after one run!
+    '''
+    # train_data_set_path = '../data/TinyStoriesV2-GPT4-valid.txt'
+    # train_data_set_path = '../data/TinyStoriesV2-GPT4-train.txt'
+    # target_vocab_size = 1000
+    # vocab_special_tokens = ["<|endoftext|>"]
     #vocab, merges = train_bpe(train_data_set_path, target_vocab_size, vocab_special_tokens)
-    vocab, merges = train_bpe_with_parallism(train_data_set_path, target_vocab_size, vocab_special_tokens, debug = True)
+    # vocab, merges = train_bpe_with_parallism(train_data_set_path, target_vocab_size, vocab_special_tokens, debug = True)
     vocab_path = '../data/vocab.bin'
     merges_path = '../data/merges.bin'
-    dump_data_to_file(vocab_path, vocab)
-    dump_data_to_file(merges_path, merges)
+    # dump_data_to_file(vocab_path, vocab)
+    # dump_data_to_file(merges_path, merges)
 
     vocab = load_data_from_file(vocab_path)
     merges = load_data_from_file(merges_path)
@@ -410,6 +447,8 @@ if __name__ == '__main__':
     decoded = T.decode(encoded)
     print(encoded)
     print(decoded)
+    encode_file("../data/TinyStoriesV2-GPT4-valid.txt", T)
+    # encode_file("../data/TinyStoriesV2-GPT4-train.txt", T)
 
 # uv run pytest tests/test_train_bpe.py
 # uv run pytest tests/test_tokenizer.py
