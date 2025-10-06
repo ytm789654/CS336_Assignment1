@@ -202,7 +202,7 @@ class BPE_pairs_manager():
         self.vocab[new_vacab_index] = new_vocab_item
         _ = self.pairs.pop(max_pair, None)
 
-PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+PAT = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
 ## Usage
 def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
@@ -321,13 +321,14 @@ def train_bpe_with_parallism(input_path: str, vocab_size: int, special_tokens: l
 
 class tokenizer():
     def __init__(self, vocab: dict[int, bytes] = {}, merges: list[tuple[bytes, bytes]] = [], special_tokens: str = None):
-        self.special_tokens = None
+        self.special_tokens_pattern = None
         self.token_to_idx: Dict[bytes, int] = {}
         self.special_token_to_idx: Dict[str, int] = {} # the given special_token is str
         if special_tokens is not None:
             # sort the input special_tokens so can pass duplicate tokens test
             special_tokens = sorted(special_tokens, key=len, reverse=True)
-            self.special_tokens = special_tokens
+            escaped_tokens = [re.escape(token) for token in special_tokens]
+            self.special_tokens_pattern = re.compile("(" + "|".join(escaped_tokens) + ")")
             for special_token in special_tokens:
                 special_token = special_token.encode('utf-8')
                 if special_token not in vocab.values():
@@ -346,24 +347,28 @@ class tokenizer():
         merges = load_data_from_file(merges_filepath)
         self.__init__(vocab, merges, special_tokens)
 
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, cache:dict = None) -> list[int]:
         encoded = []
-        if self.special_tokens is not None:
-            escaped_tokens = [re.escape(token) for token in self.special_tokens]
-            pattern = "(" + "|".join(escaped_tokens) + ")"  # capature special_token as well
-            docs = re.split(pattern, text)
+        if self.special_tokens_pattern is not None:
+            docs = re.split(self.special_tokens_pattern, text)
         else:
             docs = [text]
         for i in range(len(docs)):
             if i%2 == 0:
                 words = parse_chunk(docs[i])
                 for word in words:
-                    for merge in self.merges:
-                        # a word may include several merge so use loop
-                        while (pos := search_pair_in_word(word, merge)) is not None:
-                            word = merge_tuple_elem(word, pos)
-                    # turn bytes into vocab index
-                    word = [self.token_to_idx[token] for token in word]
+                    if cache is not None and word in cache:
+                        word = cache[word]
+                    else:
+                        orig_word = word
+                        for merge in self.merges:
+                            # a word may include several merge so use loop
+                            while (pos := search_pair_in_word(word, merge)) is not None:
+                                word = merge_tuple_elem(word, pos)
+                        # turn bytes into vocab index
+                        word = [self.token_to_idx[token] for token in word]
+                        if cache is not None:
+                            cache[orig_word] = word
                     encoded = encoded + word
             else:   # special_token will only appear in odd index
                 id = self.token_to_idx[docs[i].encode('utf-8')]
@@ -392,21 +397,28 @@ class tokenizer():
 
 # parallel read file to generate token seq
 def parallism_encode_launch_function(filepath: str, chunk_boundaries: list[tuple], tokenizer:tokenizer, thread_idx: int):
+    encode_cache = {} # use a cache to record word encoding result to accelerate
     with open(filepath, "rb") as f:
+        chunk_index = 0
         for start, end in chunk_boundaries:
+            print(f'thread {thread_idx} processing chunk {chunk_index}, chunk size {end-start}')
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            encoded = tokenizer.encode(chunk)
+            encoded = tokenizer.encode(chunk, encode_cache)
             with open("../data/training_seq_data/TinyStoriesV2-GPT4-train_bpe" + str(thread_idx) + ".npy", "ab") as np_out:
                 np_out.write(np.array(encoded, dtype=np.int16).tobytes())
                 np_out.close()
+            chunk_index += 1
         f.close()
+    if(thread_idx == 0):
+        print(f'cache size: {len(encode_cache)}')
 
 def encode_file(filepath, tokenizer:tokenizer):
     with open(filepath, "rb") as f:
         # My 136kf has 20 logic processor, so can try 20 processes, awsome!
         num_processes = 20
-        chunk_per_process = 4
+        # seems too big chunk uses too long time, use more chunks!
+        chunk_per_process = 10000
         boundaries = find_chunk_boundaries(f, num_processes * chunk_per_process, b"<|endoftext|>")
         f.close()
         chunk_num = len(boundaries) -1
@@ -417,10 +429,9 @@ def encode_file(filepath, tokenizer:tokenizer):
         num_processes = len(boundaries_per_process)
         with ProcessPoolExecutor(max_workers=num_processes) as executor:
             for i in range(num_processes):
-                executor.submit(parallism_encode_launch_function, filepath, boundaries_per_process[i], tokenizer, i)
+                all_task = executor.submit(parallism_encode_launch_function, filepath, boundaries_per_process[i], tokenizer, i)
         
 if __name__ == '__main__':
-    start_time = time.time()
     '''
     load exsiting BPE tokenizer after one run!
     '''
@@ -437,18 +448,15 @@ if __name__ == '__main__':
 
     vocab = load_data_from_file(vocab_path)
     merges = load_data_from_file(merges_path)
-    
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"time used: {elapsed_time:.6f} seconds")
+
     #print(merges)
     T = tokenizer(vocab, merges, ["<|endoftext|>"])
     encoded = T.encode('The strange <|endoftext|>park<|endoftext|>')
     decoded = T.decode(encoded)
     print(encoded)
     print(decoded)
-    encode_file("../data/TinyStoriesV2-GPT4-valid.txt", T)
-    # encode_file("../data/TinyStoriesV2-GPT4-train.txt", T)
+    # encode_file("../data/TinyStoriesV2-GPT4-valid.txt", T)
+    encode_file("../data/TinyStoriesV2-GPT4-train.txt", T)
 
 # uv run pytest tests/test_train_bpe.py
 # uv run pytest tests/test_tokenizer.py
